@@ -1,0 +1,35 @@
+{
+  "name": "dsh-gitbash",
+  "version": "0.1.0",
+  "description": "A parallel bash tool for DeepSeek Harness that spawns the local Git for Windows bash.exe directly (no runtime copy; not a ctx.shell replacement; no sandbox confinement).",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./resolve": "./lib/resolve.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "tools",
+    "test",
+    "README.md",
+    "docs"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "keywords": [
+    "deepseek",
+    "deepseek-harness",
+    "dsh",
+    "bash",
+    "git-bash",
+    "shell",
+    "plugin"
+  ],
+  "license": "MIT"
+}
