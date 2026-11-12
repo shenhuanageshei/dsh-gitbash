@@ -1,8 +1,6 @@
 node_modules/
 load-ok.txt
 load-error.txt
-probe-baseline.txt
-probe-loaded.txt
 *.log
 .DS_Store
 Thumbs.db
