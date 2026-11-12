@@ -8,7 +8,7 @@
 
 > **v0.1.0 的边界**：不做沙箱 confinement。`danger-full-access` 下与官方工具等价；
 > `workspace-write` / `read-only` 下本工具**不提供**文件效果隔离。沙箱与路径配置的下一版方案见
-> `docs/v0.2-plan.md`。
+> `docs/v0.2-design.md`。
 
 ## 为什么不是「替换执行器」
 
@@ -49,7 +49,7 @@ node --test           # 路径解析 + 功能测试；用例清单与判据见 d
 
 1. **不做沙箱 confinement**：`workspace-write` 下本工具不提供文件效果隔离（`danger-full-access` 下等价）。
 2. **前台同步**：没有后台作业/任务 id；长跑命令会占满一次调用。
-3. **PATH 兜底可能命中 WSL**：候选链最后一档是 `PATH`，其中可能包含 `%SystemRoot%\System32\bash.exe`（WSL 启动器）。在 Git 装在非标准目录且装了 WSL 的机器上，可能静默选到它（`uname -s` 返回 `Linux`）。v0.2 的 FR-P2 会加候选校验（见 `docs/v0.2-plan.md`）。
+3. **PATH 兜底可能命中 WSL**：候选链最后一档是 `PATH`，其中可能包含 `%SystemRoot%\System32\bash.exe`（WSL 启动器）。在 Git 装在非标准目录且装了 WSL 的机器上，可能静默选到它（`uname -s` 返回 `Linux`）。0.2.1 的路径增强会加候选校验（见 `docs/v0.2-design.md` 的「非目标」）。
 
 ## 许可
 

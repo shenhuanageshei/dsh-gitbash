@@ -65,7 +65,7 @@
 | `test/candidate.test.mjs` | v1 复用（加 1 例） | 路径解析 8 例（含发布卫生断言） |
 | `test/tool.test.mjs` | **v2 新增** | 功能 6 例（真实 Git Bash 调用） |
 | `docs/design.md`、`docs/install.md`、`README.md` | **v2 重写** | 设计与安装权威源 |
-| `docs/v0.2-plan.md` | **新增** | v0.2 沙箱与路径提案（未实施） |
+| `docs/v0.2-design.md` | **新增** | v0.2.0 沙箱设计（待评审；路径顺延 0.2.1） |
 | profile `cordis.patch.yml` | 追加一行 insert | 唯一装载点 |
 
 ## 机制伪代码
@@ -111,7 +111,7 @@ execute(args, exec):
 
 - **沙箱**：当前实现**不做** `ctx.sandbox.confine`；在 `danger-full-access` 下与官方工具等价，
   在 `workspace-write` 下本工具**不提供**文件效果 confinement —— 这是已知缺口，使用前必须知晓。
-- **PATH 兜底可能命中 WSL**：候选链最后一档是 `PATH`，其中可能包含 `%SystemRoot%\System32\bash.exe`（WSL 启动器）。在 Git 装在非标准目录且装了 WSL 的机器上，本工具可能静默选中它（`uname -s` 返回 `Linux`）。v0.2 的 FR-P2 会加候选签名校验（见 `docs/v0.2-plan.md`）。
+- **PATH 兜底可能命中 WSL**：候选链最后一档是 `PATH`，其中可能包含 `%SystemRoot%\System32\bash.exe`（WSL 启动器）。在 Git 装在非标准目录且装了 WSL 的机器上，本工具可能静默选中它（`uname -s` 返回 `Linux`）。0.2.1 的路径增强会加候选签名校验（见 `docs/v0.2-design.md` 的「非目标」）。
 - 命令为空 / bash.exe 不存在 / subprocess 缺失：返回文案，不抛异常。全部失败文案的**首段令牌**固定：
   `GITBASH_UNAVAILABLE`（路径解析失败，来自 `lib/resolve.js`）与 `EXECUTOR_UNAVAILABLE`（宿主 subprocess 服务缺失）；
   `bash: command must be a non-empty string` 只用于空命令。
