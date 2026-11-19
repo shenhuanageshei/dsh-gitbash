@@ -5,6 +5,7 @@
 - **不拷贝、不解包**：每次调用只拉起一个 `bash.exe` 进程。
 - **不碰 `ctx.shell`**：与 pwsh 共存，最坏情况只是本工具不出现，不会影响现有 shell。
 - **沙箱优先（v0.2.0）**：每次调用先解析宿主的 `sandboxPolicy`；非 `danger-full-access` 时把 argv 交给 `ctx.sandbox.confine()` 再 spawn。沙箱不可用时**拒绝执行**，不静默降级。
+  > ⚠️ Windows 受限模式（`workspace-write` / `read-only`）下 MSYS/Git Bash **无法启动**（受限令牌拒绝 `\BaseNamedObjects`），见「已知限制」第 6 条。
 - 输出语义对齐官方 shell 工具：stdout → `[stderr]` 段 → 沙箱标记 → `[timed out]` / `[error: ...]` / `[signal: ...]` / `[exit code: N]`。
 
 > **沙箱边界（如实说明）**：Windows 后端（`windows-acl`）的 enforcement 是 `partial` —— 它**只限制写**，
@@ -15,6 +16,10 @@
 
 > **兼容性（as-of 2026-11-19 实测，DSH 0.2.2-rc.5）**：沙箱 preparation 失败的两个新错误码
 > `SANDBOX_PREPARATION_FAILED` / `SANDBOX_INVALID_TEMP_ROOT` 原样透传（首段令牌），本工具不重试、不降级。
+>
+> **0.2.2（2026-11-19）**：Windows 受限模式（`workspace-write` / `read-only`）下 Git Bash 无法启动时，本工具返回
+> `SANDBOX_UNAVAILABLE: Git Bash cannot start under the Windows restricted-token sandbox … The command did not run.`
+> （命令未运行，不渲染原始退出码；这是沙箱边界，不是命令失败）。受限会话请用官方 `pwsh`，或把会话切到 `danger-full-access`。
 
 ## 为什么不是「替换执行器」
 
@@ -46,7 +51,7 @@ patch 行的 `config` 直接传给插件（无 schema 校验）：
 node --test           # 路径解析 + 功能 + 沙箱用例；用例清单与判据见 docs/design.md 的「防偏离」A0/A1
 ```
 
-功能与沙箱用例不需要真实 DSH 进程（spawn 与沙箱服务都是注入的，fake 用例用 `process.execPath` 当作可解析的假 `bashPath`）。其中**真实调用档（4 例）**的 `skip` 条件不是「完全没有 bash.exe」，而是「解析到的不是 Git Bash」：候选链里的 `System32\bash.exe`（WSL 启动器）被排除，并对候选跑 `uname -s`，只有 MINGW/MSYS/CYGWIN 才算 Git Bash；工具测试共 25 例，其余 21 例在任何 PATH 下都照常运行。
+功能与沙箱用例不需要真实 DSH 进程（spawn 与沙箱服务都是注入的，fake 用例用 `process.execPath` 当作可解析的假 `bashPath`）。其中**真实调用档（4 例）**的 `skip` 条件不是「完全没有 bash.exe」，而是「解析到的不是 Git Bash」：候选链里的 `System32\bash.exe`（WSL 启动器）被排除，并对候选跑 `uname -s`，只有 MINGW/MSYS/CYGWIN 才算 Git Bash；工具测试共 28 例，其余 24 例在任何 PATH 下都照常运行（连路径解析 8 例，全量 36 例）。
 
 ## 安装
 
@@ -56,9 +61,10 @@ node --test           # 路径解析 + 功能 + 沙箱用例；用例清单与�
 
 1. **Windows 只限写**：宿主 `windows-acl` 后端只限制写；读、网络、进程可见性不受限（源码注释原文如此）。要读隔离需另走容器方案（不在 0.2.x 范围）。
 2. **额外可写目录对进程不生效**：DSH 0.2.2-rc.5 起，Windows 进程沙箱忽略会话配置的 `additionalWritableRoots`，`confine` 不再抛 `SANDBOX_UNSUPPORTED_POLICY`；这些额外目录只对**文件工具**生效，写它们会被 ACL 拒（与官方 bash 一致）。
-3. **`sandbox_permissions` 升级未实现**：留待 0.2.2；denial 后可改用官方 `pwsh` 走批准流程。
+3. **`sandbox_permissions` 升级未实现**：留待 0.2.3+（as-of 2026-11-19）；denial 后可改用官方 `pwsh` 走批准流程。
 4. **前台同步**：没有后台作业/任务 id；长跑命令会占满一次调用。
-5. **PATH 兜底可能命中 WSL**：候选链最后一档是 `PATH`，其中可能包含 `%SystemRoot%\System32\bash.exe`（WSL 启动器）。在 Git 装在非标准目录且装了 WSL 的机器上，可能静默选到它（`uname -s` 返回 `Linux`）。0.2.2 的路径增强会加候选校验（见 `docs/v0.2-design.md` 的「非目标」）。
+5. **PATH 兜底可能命中 WSL**：候选链最后一档是 `PATH`，其中可能包含 `%SystemRoot%\System32\bash.exe`（WSL 启动器）。在 Git 装在非标准目录且装了 WSL 的机器上，可能静默选到它（`uname -s` 返回 `Linux`）。0.2.3+ 的路径增强会加候选校验（见 `docs/v0.2-design.md` 的「非目标」；as-of 2026-11-19）。
+6. **Windows 受限模式下 Git Bash 无法启动（2026-11-19，DSH 0.2.2-rc.5 实测）**：`workspace-write` / `read-only` 下宿主的限制令牌（Low 完整性 + 限制性 SID）让 MSYS 无法创建 `\BaseNamedObjects\msys-2.0S5-…`（`0xC0000022`，进程退出码 `3221225794`），bash 在任何命令执行前退出。**受限会话请改用官方 `pwsh`，或把会话切到 `danger-full-access`**。0.2.2 起该失败返回 `SANDBOX_UNAVAILABLE: Git Bash cannot start under the Windows restricted-token sandbox …` 明确文案（命令未运行，不渲染原始退出码）；根治取决于宿主沙箱是否放行 MSYS。
 
 ## 许可
 

@@ -1,4 +1,4 @@
-# dsh-gitbash 设计档（v2.1：并行 bash 工具 + 宿主沙箱；现行版本 0.2.1）
+# dsh-gitbash 设计档（v2.1：并行 bash 工具 + 宿主沙箱；现行版本 0.2.2）
 
 > 本文是**机制与设计**的单一权威源；**安装步骤**的唯一权威源是 `docs/install.md`。
 
@@ -12,6 +12,8 @@
 v0.2.0（2026-11-12）把执行路径接回宿主沙箱：每次调用经 `ctx.sandboxPolicy` 解析策略、经 `ctx.sandbox.confine()` 得到受限 argv；需求、决策、测试矩阵与真机验收见 `docs/v0.2-design.md`。
 
 v0.2.1（2026-11-19，as-of DSH 0.2.2-rc.5）是对上游沙箱 seam 的兼容适配：宿主新增的准备阶段错误码 `SANDBOX_PREPARATION_FAILED` / `SANDBOX_INVALID_TEMP_ROOT` 原样透传（旧码保留），`load-ok.txt` 的诊断字段改名为 `sandboxServicesAtApply`（apply 时点读数）。**沙箱语义不变**，本档其余描述对 0.2.1 继续成立。
+
+v0.2.2（2026-11-19）处置 Windows 受限模式下 Git Bash 不可启动：受限路径结算后识别 MSYS 启动失败签名（退出码 `3221225794` + stderr 含 `NtCreateDirectoryObject` / `msys-2.0`），命中返回 `SANDBOX_UNAVAILABLE: Git Bash cannot start under the Windows restricted-token sandbox … The command did not run.` 固定文案（不追加 denial 标记、不渲染 `[exit code:]`）；守卫为 `prepared && policy && policy.mode !== "danger-full-access"`。`danger-full-access` 与既有分类路径零变化；工具用例 28 例（全量 36 例）。
 
 ## 问题
 
@@ -68,19 +70,20 @@ v0.2.1（2026-11-19，as-of DSH 0.2.2-rc.5）是对上游沙箱 seam 的兼容�
 argv 经 `sandbox.confine([bash,'--noprofile','--norc','-c',command], policy, exec.signal)` 得到，且**只 spawn `prepared.argv`**。
 沙箱服务的任何异常或畸形返回都在 spawn 之前失败（`SANDBOX_UNAVAILABLE: …`；宿主错误码优先保留：0.2.1 起为 `SANDBOX_PREPARATION_FAILED` / `SANDBOX_INVALID_TEMP_ROOT`，另保留 `SANDBOX_UNSUPPORTED_POLICY` / `SANDBOX_INVALID_ROOT` 供旧宿主；旧码在 rc.5 已不再抛出）。
 策略服务缺失时默认拒绝；唯一例外是 `unconfinedWhenSandboxMissing: true`（退回 FR-3 的原 argv）。denial / runner 失败标记与宿主逐字一致；受限模式下 runner 可执行文件启动失败（ENOENT/EACCES）另按 `SANDBOX_UNAVAILABLE: … the command did not run …` 返回，不追加 denial 标记（T14 锚定；`danger-full-access` 的既有错误文案不变）。
+**受限模式启动失败（v0.2.2）**：受限路径结算后若 `exitCode === 3221225794` 且 stderr 含 `NtCreateDirectoryObject` / `msys-2.0`，返回 `SANDBOX_UNAVAILABLE: Git Bash cannot start under the Windows restricted-token sandbox … The command did not run.` 固定文案，不追加 denial 标记、不渲染 `[exit code:]`；守卫为 `prepared && policy && policy.mode !== "danger-full-access"`（policy 缺失的显式开关路径不解引用 `policy.mode`）。机制详述与 T17/T17b/T18 见 `docs/v0.2-design.md`。
 完整规则、测试矩阵与真机验收见 `docs/v0.2-design.md`。
 
 ### 受影响文件
 
 | 文件 | 状态 | 作用 |
 |---|---|---|
-| `lib/index.js` | **v2 重写；v0.2.0 接入沙箱；v0.2.1 错误码 + 诊断字段** | 插件入口：`apply`/`execute`/`runArgv`/`renderResult` + 策略解析与沙箱结果分类 |
+| `lib/index.js` | **v2 重写；v0.2.0 接入沙箱；v0.2.1 错误码 + 诊断字段；v0.2.2 MSYS 启动失败签名** | 插件入口：`apply`/`execute`/`runArgv`/`renderResult` + 策略解析、沙箱结果分类与受限模式启动失败识别 |
 | `lib/resolve.js` | v1 复用（发布清理） | 纯路径解析核心（不 import `@deepseek-ai/*`）；v0.1.0 删除本机便利项与 `PROBE_MARKER` |
 | `lib/probe.js`、`lib/probe-baseline.js` | **已删除** | v1 诊断探针；装载事实改由 `load-ok.txt` 记录（v0.1.0 发布清理） |
 | `test/candidate.test.mjs` | v1 复用（加 1 例） | 路径解析 8 例（含发布卫生断言） |
-| `test/tool.test.mjs` | **v2 新增；v0.2.0 扩 17 例；v0.2.1 扩 19 例** | 功能 6 例（其中 4 例真实 Git Bash 调用）+ 沙箱 19 例（T1–T16 及其变体 T2b/T3b/T7b/T12b，fake ctx；共 25 例） |
-| `docs/design.md`、`docs/install.md`、`README.md` | **v2 重写；v0.2.0 同步；v0.2.1 同步** | 设计与安装权威源（0.2.1 同步 rc.5 口径、两个新错误码排查项与诊断字段时点语义） |
-| `docs/v0.2-design.md` | **新增（第 2 轮评审 PASS）** | v0.2.0 沙箱设计；路径增强顺延 0.2.2 |
+| `test/tool.test.mjs` | **v2 新增；v0.2.0 扩 17 例；v0.2.1 扩 19 例；v0.2.2 扩 22 例** | 功能 6 例（其中 4 例真实 Git Bash 调用）+ 沙箱 22 例（T1–T18 及其变体 T2b/T3b/T7b/T12b/T17b，fake ctx；共 28 例；T12 无独立用例，由 T12b 承担） |
+| `docs/design.md`、`docs/install.md`、`README.md` | **v2 重写；v0.2.0 同步；v0.2.1 同步；v0.2.2 同步** | 设计与安装权威源（0.2.1 同步 rc.5 口径、两个新错误码排查项与诊断字段时点语义；0.2.2 同步受限模式启动失败文案与 A5 实测口径） |
+| `docs/v0.2-design.md` | **新增（第 2 轮评审 PASS）** | v0.2.0 沙箱设计；0.2.1 兼容适配；0.2.2 MSYS 受限启动处置；路径增强顺延 0.2.3+ |
 | profile `cordis.patch.yml` | 追加一行 insert | 唯一装载点 |
 
 ## 机制伪代码
@@ -127,18 +130,18 @@ execute(args, exec):
   （最后一个默认 `false`，只对「没有 sandboxPolicy 服务」的 profile 生效；provider 缺失 / policy 非法时无效）。
 - 磁盘写入边界：本插件只在包根目录写诊断标记 `load-ok.txt`（apply 成功）或 `load-error.txt`（apply 失败），两者已进 `.gitignore`；
   v0.2.1 起 `load-ok.txt` 追加 `sandboxServicesAtApply=present|missing`（仅诊断；apply 时点读数，服务按可用性激活，不代表运行期缺失）。除此之外不写任何文件。**输出超过 `maxOutputBytes` 时宿主 spill 会写一个临时文件**（继承行为）。
-- 版本：`0.2.1`。
+- 版本：`0.2.2`。
 
 ## 防偏离
 
 | 检查 | 命令 | 通过判据 |
 |---|---|---|
 | A0 路径单测 | `node --test test/candidate.test.mjs` | 8 个用例全过 |
-| A1 功能测试 | `node --test test/tool.test.mjs` | 25 个用例全过（功能 6 例 + 沙箱 19 例：T1–T16 及其变体 T2b/T3b/T7b/T12b）。**前提**：4 个真实调用档必须解析到已验证的 Git Bash（跑 `uname -s`，要求 MINGW/MSYS/CYGWIN；`System32\bash.exe` 这个 WSL 启动器不计），否则只有这 4 例 `skip`，其余 21 例照常运行 |
+| A1 功能测试 | `node --test test/tool.test.mjs` | 28 个用例全过（功能 6 例 + 沙箱 22 例：T1–T18 及其变体 T2b/T3b/T7b/T12b/T17b；T12 无独立用例，由 T12b 承担）。**前提**：4 个真实调用档必须解析到已验证的 Git Bash（跑 `uname -s`，要求 MINGW/MSYS/CYGWIN；`System32\bash.exe` 这个 WSL 启动器不计），否则只有这 4 例 `skip`，其余 24 例照常运行（全量含路径 8 例共 36 例） |
 | A2 工具出现 | 重启后工具表 | 有 `bash`（且 `pwsh` 仍在）——**2026-11-11 15:02 实测 PASS**（`load-ok.txt` 记录 `tool=bash`，`pwsh` 同时可用） |
 | A3 真实执行 | bash 工具跑 `uname -s` | `MINGW64_NT-...`——**2026-11-11 15:0x 实测 PASS**：`MINGW64_NT-10.0-26200` / `BASH_VERSION=5.2.37(1)-release` / `git=/mingw64/bin/git` |
 | A4 无副本 | 调用前后 `$env:TEMP\dsh-*` 目录数、TEMP 盘可用空间 | 数量不增、差值 < 50 MB——**2026-11-11 15:0x 实测 PASS**：`dsh-*` 目录 213→213，C 盘可用 3653.3→3653.1 MB（Δ0.2 MB，噪声级） |
-| A5 沙箱真机 | 见 `docs/v0.2-design.md` 的 B1–B6 | 需临时把会话切到 `workspace-write` / `read-only`；本机当前会话是 `danger-full-access`，**未执行** |
+| A5 沙箱真机 | 见 `docs/v0.2-design.md` 的 B1–B6 | **2026-11-19 rc.5 实测**：B5 通过；B1/B2/B3/B6 阻塞（受限令牌下 MSYS 无法启动，`exit 3221225794`，无 denial 标记）；B4 受限模式不可测、`danger-full-access` 补测 PASS。详见 v0.2-design 的 B 表实测注 |
 | A6 无宿主值导入 | `grep -rn 'from "@deepseek-ai\|require("@deepseek-ai' lib/` | 0 命中（T11 从测试侧同时锚定 `from` / `require` 两种形态） |
 
 ## 边界
@@ -152,7 +155,11 @@ execute(args, exec):
   `confine` 不再抛 `SANDBOX_UNSUPPORTED_POLICY`；写这些目录会被 ACL 拒（与官方 bash 一致）。
 - **沙箱准备失败（0.2.2-rc.5 起）**：`SANDBOX_PREPARATION_FAILED`（ACL / 私有临时目录准备失败）与
   `SANDBOX_INVALID_TEMP_ROOT`（TEMP 落在工作区内）原样透传首段令牌；本工具不重试、不降级，且命令未运行。
-- **PATH 兜底可能命中 WSL**：候选链最后一档是 `PATH`，其中可能包含 `%SystemRoot%\System32\bash.exe`（WSL 启动器）。在 Git 装在非标准目录且装了 WSL 的机器上，本工具可能静默选中它（`uname -s` 返回 `Linux`）。0.2.2 的路径增强会加候选签名校验（见 `docs/v0.2-design.md` 的「非目标」）。
+- **受限令牌下 Git Bash 无法启动（v0.2.2 起）**：`workspace-write` / `read-only` 的 Low 完整性 + 限制性 SID 让 MSYS
+  无法创建 `\BaseNamedObjects`（退出码 `3221225794`）；本插件按签名（`NtCreateDirectoryObject` / `msys-2.0`）
+  返回 `SANDBOX_UNAVAILABLE: … The command did not run.` 明确文案，不渲染原始退出码；`danger-full-access` 不受影响，
+  宿主未来放行 MSYS 时签名不再命中、自动恢复原路径。
+- **PATH 兜底可能命中 WSL**：候选链最后一档是 `PATH`，其中可能包含 `%SystemRoot%\System32\bash.exe`（WSL 启动器）。在 Git 装在非标准目录且装了 WSL 的机器上，本工具可能静默选中它（`uname -s` 返回 `Linux`）。0.2.3+ 的路径增强会加候选签名校验（见 `docs/v0.2-design.md` 的「非目标」；as-of 2026-11-19）。
 - 命令为空 / bash.exe 不存在 / subprocess 缺失：返回文案，不抛异常。全部失败文案的**首段令牌**固定：
   `GITBASH_UNAVAILABLE`（路径解析失败，来自 `lib/resolve.js`）与 `EXECUTOR_UNAVAILABLE`（宿主 subprocess 服务缺失）；
   `bash: command must be a non-empty string` 只用于空命令。

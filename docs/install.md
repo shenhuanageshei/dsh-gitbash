@@ -1,4 +1,4 @@
-# 安装 / 卸载（v2.1：并行 bash 工具 + 宿主沙箱；本流程是唯一权威源）
+# 安装 / 卸载（v2.1：并行 bash 工具 + 宿主沙箱；现行版本 0.2.2；本流程是唯一权威源）
 
 > 只加**一行** insert，不动任何既有行，所以不会影响 pwsh。insert 行仍需**重启**才挂载。
 
@@ -59,6 +59,9 @@ pnpm install --no-frozen-lockfile
   `confine` 不再抛 `SANDBOX_UNSUPPORTED_POLICY`，写这些目录会被 ACL 拒（与官方 bash 一致）。
 - **准备阶段失败（0.2.2-rc.5 起）**：ACL / 私有临时目录准备失败返回 `SANDBOX_PREPARATION_FAILED: …`，
   TEMP 落在工作区内返回 `SANDBOX_INVALID_TEMP_ROOT: …`；两者都在 spawn 之前返回，**命令没有运行**。
+- **Windows 受限模式无法启动 Git Bash（2026-11-19 rc.5 实测）**：受限令牌下 MSYS 需要 `\BaseNamedObjects`
+  被拒（`0xC0000022` / 退出码 `3221225794`），命令不会运行；受限会话请用官方 `pwsh` 或切 `danger-full-access`。
+  0.2.2 起该失败返回 `SANDBOX_UNAVAILABLE: Git Bash cannot start under the Windows restricted-token sandbox … The command did not run.`（命令未运行，不渲染原始退出码）。
 - `load-ok.txt` 里的 `sandboxServicesAtApply=present|missing` 是 **apply 时点**读数（服务按可用性激活），**不代表**运行期缺服务；
   运行期 `execute()` 每次重新读取，缺服务时按上文 fail closed。
 
@@ -69,9 +72,11 @@ pnpm install --no-frozen-lockfile
 | A2 工具出现 | 看工具表 | 有 `bash`，且 `pwsh` 仍在 |
 | A3 真实执行 | bash 工具跑 `uname -s` | `MINGW64_NT-...` |
 | A4 无副本 | 调用前后数 `$env:TEMP\dsh-*`、看 TEMP 盘可用空间 | 数量不增、差值 < 50 MB |
-| B1–B6 沙箱 | 见 `docs/v0.2-design.md` 的 B1–B6 | 需临时把会话切到 `workspace-write` / `read-only`；当前 `danger-full-access` 会话无法覆盖 |
+| B1–B6 沙箱 | 见 `docs/v0.2-design.md` 的 B1–B6 | **rc.5 实测：仅 B5 通过**；B1/B2/B3/B6 因受限令牌无法启动 MSYS 而阻塞；B4 受限模式不可测、`danger-full-access` 补测 PASS |
 
-编号映射：**A 系** = 装载 / 功能检查，但两处含义不同——`tools/acceptance.ps1` 内 A1=语法、A2=load 标记、A3=临时目录增量、A4=磁盘差值；`docs/design.md`「防偏离」A0–A6 是另一套（A1=功能测试 25 例等）。**B 系** = v0.2.0 真机沙箱验收（B1–B6，判据见 `docs/v0.2-design.md`）。执行时以各自表格为准。
+编号映射：**A 系** = 装载 / 功能检查，但两处含义不同——`tools/acceptance.ps1` 内 A1=语法、A2=load 标记、A3=临时目录增量、A4=磁盘差值；`docs/design.md`「防偏离」A0–A6 是另一套（A1=功能测试 28 例等）。**B 系** = v0.2.0 真机沙箱验收（B1–B6，判据见 `docs/v0.2-design.md`）。执行时以各自表格为准。
+
+> **2026-11-19 rc.5 实测**：B5 通过；B1/B2/B3/B6 因受限令牌无法启动 MSYS 而阻塞（`exit 3221225794`，无 denial 标记）；B4 受限模式不可测、`danger-full-access` 补测 PASS。**受限会话请用 `pwsh`，或把会话切到 `danger-full-access`。**
 
 机械验收（A1-A4，两阶段，见脚本头注释）：
 
@@ -81,7 +86,14 @@ pwsh -File tools\acceptance.ps1 -Phase before
 pwsh -File tools\acceptance.ps1 -Phase after
 ```
 
-> 注意：`node --test` 会通过 `apply()` 刷新 `load-ok.txt`（T13 用例）。因此 **A2 装载检查要在重启后、跑离线测试之前执行**；先跑测试会让 A2 在未重启的情况下误绿。
+> 注意：`node --test` 会通过 `apply()` 刷新 `load-ok.txt`（T13 用例）。因此 **A2 装载检查要在重启后、跑离线测试之前执行**。
+>
+> **A2 加固（0.2.2 起）**：A2 除 `tool=bash` 外还断言
+> ① `bashPath=` 字段存在，且（期望值已知且非空时）其值非空并等于期望值（优先 `-ExpectedBashPath`，否则读 profile 的 `cordis.patch.yml` 里的 gitbash 行；
+> 文件读不到或无 gitbash 行则只要求字段存在并提示；配置 `bashPath` 为空即候选链模式时同样只要求 `bashPath=` 字段存在并提示，不再要求非空）；
+> ② `loaded=` 落在 [最老 `DeepSeek Harness` 进程 StartTime, +10min]（多进程取最老；找不到进程报 FAIL，不静默 PASS）。
+> ③ 双开 DSH 时 A2 可能误红（「最老进程」可能来自旧实例）；**关掉旧实例后复跑**即可确认。
+> 先跑 `node --test` 会让标记变成 `bashPath=…node.exe`；**配置了非空 `bashPath` 时 A2 必然失败**（路径不一致）；候选链 / 期望值未知时由 ② 的时间窗兜底（宿主启动超过 10 分钟后才红）。
 
 离线测试（不需要重启）：
 
@@ -105,6 +117,7 @@ node --test
 | 调用返回 `SANDBOX_UNAVAILABLE: sandbox provider service is not composed` | 有策略服务但沙箱 provider 缺失 | 宿主装配问题；本工具不会降级执行 |
 | 输出 `[sandbox: file access denied under <mode> mode]` | 策略拒绝（写越界） | 预期结果：改到允许的路径或让用户调整策略；**不要**换工具绕过 |
 | 输出 `[sandbox: the sandbox runner itself failed …]` | 沙箱 runner 自身故障，命令没有运行 | 沙箱环境问题（不是命令问题）；按提示排查 runner，不要当命令失败重试 |
+| 调用返回 `SANDBOX_UNAVAILABLE: Git Bash cannot start under the Windows restricted-token sandbox …` | 受限模式（`workspace-write` / `read-only`）下 MSYS 无法创建 `\BaseNamedObjects`（退出码 3221225794），bash 在命令执行前退出 | 这是宿主令牌与 MSYS 的边界，不是 `bashPath` 配置问题；受限会话请用官方 `pwsh`，或把会话切到 `danger-full-access` |
 | 调用返回 `SANDBOX_PREPARATION_FAILED: …` | 沙箱准备失败（ACL 授权 / 私有临时目录准备失败），命令未运行 | 沙箱环境问题（不是命令问题）；按提示排查 ACL / 临时目录，不要当命令失败重试 |
 | 调用返回 `SANDBOX_INVALID_TEMP_ROOT: …` | `TEMP` 落在工作区内，宿主拒绝准备沙箱，命令未运行 | 把 `TEMP` / `TMP` 指到工作区外（例如用户临时目录）后重试 |
 | 命令卡住到超时 | 前台同步执行，没有后台作业 | 把长任务拆短或用 `start`/`&` 自行脱离（注意：脱离的进程不受管） |

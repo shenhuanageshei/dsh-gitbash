@@ -13,6 +13,10 @@
   Only -Phase after can print ACCEPTANCE: PASS. auto/before print
   ACCEPTANCE: INCOMPLETE, so a half-run never looks like a green gate.
 
+  When two DSH instances are running, A2 may false-FAIL: it derives the load
+  window from the OLDEST DeepSeek Harness process, which can belong to the
+  older instance. Close the old instance and re-run A2.
+
   The between-snapshot file lives in the temp directory and is removed by the
   after phase, so the plugin directory has no second artefact.
 
@@ -22,15 +26,26 @@
 .PARAMETER PluginRoot
   Plugin directory (defaults to the script's parent's parent).
 
-.PARAMETER ProbeMaxAgeMinutes
-  A2 accepts load-ok.txt only if written within this window and names tool=bash.
+.PARAMETER ExpectedBashPath
+  Expected value of bashPath= in load-ok.txt. When omitted, A2 reads bashPath
+  from the gitbash insert row in PatchPath. A2 always requires the bashPath=
+  field to be present; equality applies only when the expectation is known:
+  non-empty expectation => non-empty AND equal; empty expectation
+  (candidate-chain mode) or unknown expectation => presence only, with a hint.
+
+.PARAMETER PatchPath
+  Profile patch file used to derive the expected bashPath
+  (default: %USERPROFILE%\.dsh\profiles\desktop\cordis.patch.yml).
+  An unreadable file (or a missing gitbash row) skips the equality assert
+  (presence only) with a hint.
 #>
 [CmdletBinding()]
 param(
   [ValidateSet('auto', 'before', 'after')]
   [string]$Phase = 'auto',
   [string]$PluginRoot = (Split-Path -Parent (Split-Path -Parent $PSCommandPath)),
-  [int]$ProbeMaxAgeMinutes = 30
+  [string]$ExpectedBashPath,
+  [string]$PatchPath = (Join-Path $env:USERPROFILE '.dsh\profiles\desktop\cordis.patch.yml')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -54,7 +69,7 @@ function Snapshot {
 
 # A1 - syntax
 $syntaxOk = $true
-foreach ($m in @('lib\\index.js', 'lib\\resolve.js')) {
+foreach ($m in @('lib\index.js', 'lib\resolve.js')) {
   $full = Join-Path $PluginRoot $m
   if (-not (Test-Path $full)) { $syntaxOk = $false; continue }
   node --check $full 2>$null
@@ -63,17 +78,133 @@ foreach ($m in @('lib\\index.js', 'lib\\resolve.js')) {
 Report 'A1' $syntaxOk 'lib modules parse (node --check)'
 
 # A2 - insert row mounted in THIS start (apply() writes load-ok.txt)
+#
+# 0.2.2 hardening (docs/v0.2-design.md FR-E3): the old 30-minute wall-clock
+# window could be refreshed by `node --test` (T13 writes load-ok.txt) and turn
+# A2 green without a restart. A2 now also asserts
+#   * bashPath= is present AND, when the expected value is known and non-empty
+#     (-ExpectedBashPath, else the gitbash insert row in -PatchPath), it is
+#     non-empty and equals it. An unreadable patch / no gitbash row (expectation
+#     unknown) or a configured empty bashPath (candidate-chain mode) asserts
+#     presence only and reports that equality was skipped, and
+#   * loaded= falls inside [oldest DeepSeek Harness process StartTime, +10min]
+#     (multiple processes: oldest wins; no process found -> FAIL, never PASS).
+# With two DSH instances running the oldest process may belong to the older
+# instance, so A2 can false-FAIL; close the old instance and re-run.
+function Get-GitbashConfigBashPath([string]$patchFile) {
+  # $null = patch unreadable / no gitbash bashPath row; "" = candidate-chain.
+  if (-not (Test-Path -LiteralPath $patchFile)) { return $null }
+  try { $lines = @(Get-Content -LiteralPath $patchFile) } catch { return $null }
+  $inGitbash = $false
+  foreach ($line in $lines) {
+    $idMatch = [regex]::Match($line, '^\s*-\s*id:\s*(\S+)\s*$')
+    if ($idMatch.Success) {
+      $inGitbash = ($idMatch.Groups[1].Value -eq 'gitbash')
+      continue
+    }
+    if (-not $inGitbash) { continue }
+    $pathMatch = [regex]::Match($line, '^\s*bashPath:\s*(.*)$')
+    if (-not $pathMatch.Success) { continue }
+    $raw = $pathMatch.Groups[1].Value.Trim()
+    # YAML inline comment: only whitespace + '#' starts one, so a '#' inside the
+    # path itself (e.g. 'C:\Git#1\bin\bash.exe') is preserved.
+    $raw = ($raw -replace '\s+#.*$', '').Trim()
+    if ($raw -match '^''(.*)''$') { return $Matches[1] }
+    if ($raw -match '^"(.*)"$') { return $Matches[1] }
+    return $raw
+  }
+  return $null
+}
+
 $marker = Join-Path $PluginRoot 'load-ok.txt'
 $errorMarker = Join-Path $PluginRoot 'load-error.txt'
 $probeOk = $false
 $probeDetail = "missing: $marker"
-if (Test-Path $errorMarker) {
-  $probeDetail = "load-error.txt present: $((Get-Content $errorMarker -Raw).Trim())"
-} elseif (Test-Path $marker) {
-  $age = (Get-Date) - (Get-Item $marker).LastWriteTime
-  $content = (Get-Content $marker -Raw).Trim()
-  $probeOk = $age.TotalMinutes -le $ProbeMaxAgeMinutes -and $content -match 'tool=bash'
-  $probeDetail = "age $([math]::Round($age.TotalMinutes, 1)) min (limit $ProbeMaxAgeMinutes); $content"
+if (Test-Path -LiteralPath $errorMarker) {
+  $probeDetail = "load-error.txt present: $((Get-Content -LiteralPath $errorMarker -Raw).Trim())"
+} elseif (Test-Path -LiteralPath $marker) {
+  $content = Get-Content -LiteralPath $marker -Raw
+  if ($null -eq $content) { $content = '' }
+  $content = $content.Trim()
+  $ok = $true
+  $notes = [System.Collections.Generic.List[string]]::new()
+
+  if ($content -notmatch 'tool=bash') {
+    $ok = $false
+    $notes.Add('tool=bash missing')
+  }
+
+  $loadedMatch = [regex]::Match($content, 'loaded=([^\s]+)')
+  $loadedAt = $null
+  if ($loadedMatch.Success) {
+    try {
+      $loadedAt = [System.DateTimeOffset]::Parse(
+        $loadedMatch.Groups[1].Value,
+        [System.Globalization.CultureInfo]::InvariantCulture,
+        [System.Globalization.DateTimeStyles]::AssumeUniversal
+      ).UtcDateTime
+    } catch {
+      $loadedAt = $null
+    }
+  }
+  if ($null -eq $loadedAt) {
+    $ok = $false
+    $notes.Add('loaded= missing or unparseable')
+  } else {
+    $starts = @()
+    $harness = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -like '*DeepSeek*Harness*' })
+    foreach ($proc in $harness) {
+      try { $starts += $proc.StartTime.ToUniversalTime() } catch { }
+    }
+    if ($starts.Count -eq 0) {
+      $ok = $false
+      $notes.Add('no DeepSeek Harness process found (load freshness unverifiable)')
+    } else {
+      $oldest = ($starts | Sort-Object)[0]
+      $windowEnd = $oldest.AddMinutes(10)
+      $inWindow = ($loadedAt -ge $oldest -and $loadedAt -le $windowEnd)
+      if (-not $inWindow) { $ok = $false }
+      $notes.Add(('loaded {0:o} window [{1:o}, {2:o}] {3}' -f $loadedAt, $oldest, $windowEnd, $(if ($inWindow) { 'ok' } else { 'OUTSIDE' })))
+    }
+  }
+
+  # Resolve the expectation FIRST, then decide what to assert:
+  #   $null = unknown (patch unreadable / no gitbash row) -> presence only;
+  #   ""    = candidate-chain mode                      -> presence only;
+  #   value = configured bashPath                       -> presence + non-empty + equal.
+  $expected = $null
+  $expectedSource = ''
+  if (-not [string]::IsNullOrWhiteSpace($ExpectedBashPath)) {
+    $expected = $ExpectedBashPath.Trim()
+    $expectedSource = '-ExpectedBashPath'
+  } else {
+    $expected = Get-GitbashConfigBashPath $PatchPath
+    if ($null -ne $expected) { $expectedSource = $PatchPath }
+  }
+
+  # bashPath= runs until the next key: Windows paths may contain spaces.
+  $pathMatch = [regex]::Match($content, 'bashPath=(.*?)(?:\s+sandboxServicesAtApply=|\s*$)')
+  $pathPresent = $pathMatch.Success
+  $actualPath = if ($pathPresent) { $pathMatch.Groups[1].Value.Trim() } else { '' }
+  if (-not $pathPresent) {
+    $ok = $false
+    $notes.Add('bashPath= field missing')
+  } elseif ($null -eq $expected) {
+    $notes.Add("skip bashPath equality (cannot read bashPath from $PatchPath)")
+  } elseif ($expected.Length -eq 0) {
+    $notes.Add('skip bashPath equality (candidate-chain mode: configured bashPath is empty)')
+  } elseif ($actualPath.Length -eq 0) {
+    $ok = $false
+    $notes.Add("bashPath= is empty but configured value is '$expected' ($expectedSource)")
+  } elseif ($actualPath -eq $expected) {
+    $notes.Add("bashPath matches $expectedSource")
+  } else {
+    $ok = $false
+    $notes.Add("bashPath '$actualPath' != configured '$expected' ($expectedSource)")
+  }
+
+  $probeOk = $ok
+  $probeDetail = $notes.ToArray() -join '; '
 }
 Report 'A2' $probeOk $probeDetail
 

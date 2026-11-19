@@ -3,8 +3,8 @@
  * lib/index.js imports only node builtins plus ./resolve.js, and the spawn
  * dependency is injected (a node:child_process adapter stands in for the host
  * subprocess service). The sandbox cases inject fake `ctx` services instead,
- * so they exercise the v0.2.0 seam without a live DSH (T1–T16 and the
- * T2b/T3b/T7b/T12b variants) and resolve a fake bashPath (process.execPath).
+ * so they exercise the v0.2.0/v0.2.2 seam without a live DSH (T1–T18 and the
+ * T2b/T3b/T7b/T12b/T17b variants) and resolve a fake bashPath (process.execPath).
  * Only the four real-call cases need Git Bash; they skip when the candidate
  * chain yields no verified Git Bash (a System32 WSL launcher never counts).
  *   node --test
@@ -66,6 +66,14 @@ const BASH = (() => {
 
 const WORKSPACE = "C:\\workspace";
 const ORIGINAL_ARGV = (command) => [FAKE_BASH, "--noprofile", "--norc", "-c", command];
+
+/**
+ * The first line MSYS prints when a restricted token denies `\BaseNamedObjects`
+ * (DSH 0.2.2-rc.5 field evidence): bash.exe dies before running the command.
+ */
+const MSYS_RESTRICTED_STDERR =
+  "bash.exe: *** fatal error - NtCreateDirectoryObject(\\BaseNamedObjects\\msys-2.0S5-abc): 0xC0000022\r\n";
+const MSYS_RESTRICTED_EXIT = 3221225794;
 
 /** Emulate the host subprocess contract over node:child_process. */
 function adapter(spec) {
@@ -544,4 +552,60 @@ test("T16 a confine SANDBOX_INVALID_TEMP_ROOT keeps its token and never spawns",
   assert.match(text, /TEMP resolves inside the workspace root/);
   assert.equal(h.confineCalls.length, 1);
   assert.equal(h.spawnSpecs.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// v0.2.2 Windows restricted-token MSYS start failure (FR-E1, T17–T18)
+// ---------------------------------------------------------------------------
+
+test("T17 a restricted-mode MSYS start failure is explained and never rendered as a command exit", async () => {
+  const h = harness({
+    policy: { mode: "workspace-write", workspaceRoot: WORKSPACE },
+    spawn: cannedSpawn({ exitCode: MSYS_RESTRICTED_EXIT, stderr: MSYS_RESTRICTED_STDERR }),
+  });
+  const text = await h.definition.execute({ command: "echo hi" }, {});
+  assert.ok(text.startsWith("SANDBOX_UNAVAILABLE: "), text);
+  assert.match(text, /Git Bash cannot start under the Windows restricted-token sandbox/);
+  assert.match(text, /The command did not run/);
+  assert.doesNotMatch(text, /\[exit code:/);
+  assert.doesNotMatch(text, /\[sandbox:/);
+  assert.equal(h.confineCalls.length, 1);
+  assert.equal(h.spawnSpecs.length, 1);
+});
+
+test("T17b a restricted-mode exit without the MSYS signature keeps the original rendering", async () => {
+  const h = harness({
+    policy: { mode: "workspace-write", workspaceRoot: WORKSPACE },
+    spawn: cannedSpawn({
+      exitCode: MSYS_RESTRICTED_EXIT,
+      stderr: "bash.exe: something unrelated went wrong\r\n",
+    }),
+  });
+  const text = await h.definition.execute({ command: "echo hi" }, {});
+  assert.doesNotMatch(text, /Git Bash cannot start under the Windows restricted-token sandbox/);
+  assert.match(text, /\[stderr\]/);
+  assert.match(text, /\[exit code: 3221225794\]/);
+});
+
+test("T18 danger-full-access and the policy-less unconfined path never trigger the MSYS text", async () => {
+  const danger = harness({
+    policy: { mode: "danger-full-access", workspaceRoot: WORKSPACE },
+    spawn: cannedSpawn({ exitCode: MSYS_RESTRICTED_EXIT, stderr: MSYS_RESTRICTED_STDERR }),
+  });
+  const dangerText = await danger.definition.execute({ command: "echo hi" }, {});
+  assert.doesNotMatch(dangerText, /Git Bash cannot start under the Windows restricted-token sandbox/);
+  assert.match(dangerText, /\[exit code: 3221225794\]/);
+  assert.equal(danger.confineCalls.length, 0);
+
+  // policy === undefined (explicit missing-service switch): the guard must not
+  // dereference policy.mode, and the original rendering stays unchanged.
+  const unconfined = harness({
+    withSandbox: false,
+    config: { unconfinedWhenSandboxMissing: true },
+    spawn: cannedSpawn({ exitCode: MSYS_RESTRICTED_EXIT, stderr: MSYS_RESTRICTED_STDERR }),
+  });
+  const unconfinedText = await unconfined.definition.execute({ command: "echo hi" }, {});
+  assert.doesNotMatch(unconfinedText, /Git Bash cannot start under the Windows restricted-token sandbox/);
+  assert.match(unconfinedText, /\[exit code: 3221225794\]/);
+  assert.equal(unconfined.confineCalls.length, 0);
 });
