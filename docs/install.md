@@ -88,6 +88,8 @@ pwsh -File tools\acceptance.ps1 -Phase after
 
 > 注意：`node --test` 会通过 `apply()` 刷新 `load-ok.txt`（T13 用例）。因此 **A2 装载检查要在重启后、跑离线测试之前执行**。
 >
+> **升级 0.2.2 后**：先重启 DSH，再跑 A2；**重启前 A2 必红**（`load-ok.txt` 仍来自旧进程或离线测试），属预期，不是回归。
+>
 > **A2 加固（0.2.2 起）**：A2 除 `tool=bash` 外还断言
 > ① `bashPath=` 字段存在，且（期望值已知且非空时）其值非空并等于期望值（优先 `-ExpectedBashPath`，否则读 profile 的 `cordis.patch.yml` 里的 gitbash 行；
 > 文件读不到或无 gitbash 行则只要求字段存在并提示；配置 `bashPath` 为空即候选链模式时同样只要求 `bashPath=` 字段存在并提示，不再要求非空）；
