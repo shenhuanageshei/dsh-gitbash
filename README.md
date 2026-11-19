@@ -13,6 +13,9 @@
 > `[sandbox: file access denied under <mode> mode]`，这是策略拒绝，**不要换路径重试**；
 > 沙箱 runner 自身故障则输出 `[sandbox: the sandbox runner itself failed under <mode> mode — the command did not run; ...]`。
 
+> **兼容性（as-of 2026-11-19 实测，DSH 0.2.2-rc.5）**：沙箱 preparation 失败的两个新错误码
+> `SANDBOX_PREPARATION_FAILED` / `SANDBOX_INVALID_TEMP_ROOT` 原样透传（首段令牌），本工具不重试、不降级。
+
 ## 为什么不是「替换执行器」
 
 `ctx.shell` 只有一个实现；Windows 的内置预设又要求它是 pwsh（停用 `pwsh-sandbox` 会让预设装配失败、
@@ -43,7 +46,7 @@ patch 行的 `config` 直接传给插件（无 schema 校验）：
 node --test           # 路径解析 + 功能 + 沙箱用例；用例清单与判据见 docs/design.md 的「防偏离」A0/A1
 ```
 
-功能与沙箱用例不需要真实 DSH 进程（spawn 与沙箱服务都是注入的，fake 用例用 `process.execPath` 当作可解析的假 `bashPath`）。其中**真实调用档（4 例）**的 `skip` 条件不是「完全没有 bash.exe」，而是「解析到的不是 Git Bash」：候选链里的 `System32\bash.exe`（WSL 启动器）被排除，并对候选跑 `uname -s`，只有 MINGW/MSYS/CYGWIN 才算 Git Bash；其余 19 例在任何 PATH 下都照常运行。
+功能与沙箱用例不需要真实 DSH 进程（spawn 与沙箱服务都是注入的，fake 用例用 `process.execPath` 当作可解析的假 `bashPath`）。其中**真实调用档（4 例）**的 `skip` 条件不是「完全没有 bash.exe」，而是「解析到的不是 Git Bash」：候选链里的 `System32\bash.exe`（WSL 启动器）被排除，并对候选跑 `uname -s`，只有 MINGW/MSYS/CYGWIN 才算 Git Bash；工具测试共 25 例，其余 21 例在任何 PATH 下都照常运行。
 
 ## 安装
 
@@ -52,10 +55,10 @@ node --test           # 路径解析 + 功能 + 沙箱用例；用例清单与�
 ## 已知限制
 
 1. **Windows 只限写**：宿主 `windows-acl` 后端只限制写；读、网络、进程可见性不受限（源码注释原文如此）。要读隔离需另走容器方案（不在 0.2.x 范围）。
-2. **额外可写目录不支持**：Windows 下若会话配置了 `additionalWritableRoots`，`confine` 抛 `SANDBOX_UNSUPPORTED_POLICY`；本工具原样透传为可读错误，不降级。
-3. **`sandbox_permissions` 升级未实现**：留待 0.2.1；denial 后可改用官方 `pwsh` 走批准流程。
+2. **额外可写目录对进程不生效**：DSH 0.2.2-rc.5 起，Windows 进程沙箱忽略会话配置的 `additionalWritableRoots`，`confine` 不再抛 `SANDBOX_UNSUPPORTED_POLICY`；这些额外目录只对**文件工具**生效，写它们会被 ACL 拒（与官方 bash 一致）。
+3. **`sandbox_permissions` 升级未实现**：留待 0.2.2；denial 后可改用官方 `pwsh` 走批准流程。
 4. **前台同步**：没有后台作业/任务 id；长跑命令会占满一次调用。
-5. **PATH 兜底可能命中 WSL**：候选链最后一档是 `PATH`，其中可能包含 `%SystemRoot%\System32\bash.exe`（WSL 启动器）。在 Git 装在非标准目录且装了 WSL 的机器上，可能静默选到它（`uname -s` 返回 `Linux`）。0.2.1 的路径增强会加候选校验（见 `docs/v0.2-design.md` 的「非目标」）。
+5. **PATH 兜底可能命中 WSL**：候选链最后一档是 `PATH`，其中可能包含 `%SystemRoot%\System32\bash.exe`（WSL 启动器）。在 Git 装在非标准目录且装了 WSL 的机器上，可能静默选到它（`uname -s` 返回 `Linux`）。0.2.2 的路径增强会加候选校验（见 `docs/v0.2-design.md` 的「非目标」）。
 
 ## 许可
 

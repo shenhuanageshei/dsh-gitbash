@@ -3,7 +3,7 @@
  * lib/index.js imports only node builtins plus ./resolve.js, and the spawn
  * dependency is injected (a node:child_process adapter stands in for the host
  * subprocess service). The sandbox cases inject fake `ctx` services instead,
- * so they exercise the v0.2.0 seam without a live DSH (T1–T14 and the
+ * so they exercise the v0.2.0 seam without a live DSH (T1–T16 and the
  * T2b/T3b/T7b/T12b variants) and resolve a fake bashPath (process.execPath).
  * Only the four real-call cases need Git Bash; they skip when the candidate
  * chain yields no verified Git Bash (a System32 WSL launcher never counts).
@@ -219,7 +219,7 @@ test("execute() refuses an empty command and a missing subprocess", async () => 
 });
 
 // ---------------------------------------------------------------------------
-// v0.2.0 sandbox seam (docs/v0.2-design.md FR-S1..FR-S5, T1–T14)
+// v0.2.0 sandbox seam (docs/v0.2-design.md FR-S1..FR-S5, T1–T16)
 // ---------------------------------------------------------------------------
 
 test("T1 danger-full-access spawns the original argv and never asks the sandbox", async () => {
@@ -483,9 +483,9 @@ test("T13 load-ok.txt records the sandbox services diagnostic", () => {
     ["sandbox", { confine: async () => ({ argv: ["runner.exe"] }) }],
   ]));
   assert.match(present, /tool=bash/);
-  assert.match(present, /sandboxServices=present/);
+  assert.match(present, /sandboxServicesAtApply=present/);
   const missing = register(new Map());
-  assert.match(missing, /sandboxServices=missing/);
+  assert.match(missing, /sandboxServicesAtApply=missing/);
 });
 
 test("T14 a confined runner that cannot start is SANDBOX_UNAVAILABLE, not a denial or a command failure", async () => {
@@ -508,4 +508,40 @@ test("T14 a confined runner that cannot start is SANDBOX_UNAVAILABLE, not a deni
   assert.doesNotMatch(text, /\[sandbox:/);
   assert.doesNotMatch(text, /\[exit code:/);
   assert.equal(h.spawnSpecs.length, 1);
+});
+
+test("T15 a confine SANDBOX_PREPARATION_FAILED keeps its token and never spawns", async () => {
+  const policy = { mode: "workspace-write", workspaceRoot: WORKSPACE };
+  const preparationError = Object.assign(
+    new Error("windows-acl-run: failed to prepare the private temp root"),
+    { code: "SANDBOX_PREPARATION_FAILED" },
+  );
+  const h = harness({
+    policy,
+    confine: async () => { throw preparationError; },
+    spawn: cannedSpawn({}),
+  });
+  const text = await h.definition.execute({ command: "echo hi" }, {});
+  assert.ok(text.startsWith("SANDBOX_PREPARATION_FAILED: "), text);
+  assert.match(text, /failed to prepare the private temp root/);
+  assert.equal(h.confineCalls.length, 1);
+  assert.equal(h.spawnSpecs.length, 0);
+});
+
+test("T16 a confine SANDBOX_INVALID_TEMP_ROOT keeps its token and never spawns", async () => {
+  const policy = { mode: "workspace-write", workspaceRoot: WORKSPACE };
+  const tempRootError = Object.assign(
+    new Error("TEMP resolves inside the workspace root: C:\\workspace\\tmp"),
+    { code: "SANDBOX_INVALID_TEMP_ROOT" },
+  );
+  const h = harness({
+    policy,
+    confine: async () => { throw tempRootError; },
+    spawn: cannedSpawn({}),
+  });
+  const text = await h.definition.execute({ command: "echo hi" }, {});
+  assert.ok(text.startsWith("SANDBOX_INVALID_TEMP_ROOT: "), text);
+  assert.match(text, /TEMP resolves inside the workspace root/);
+  assert.equal(h.confineCalls.length, 1);
+  assert.equal(h.spawnSpecs.length, 0);
 });

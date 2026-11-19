@@ -55,6 +55,12 @@ pnpm install --no-frozen-lockfile
 - 被拒输出 `[sandbox: file access denied under <mode> mode]`（策略拒绝，不要换路径重试）；
   沙箱 runner 自身故障输出 `[sandbox: the sandbox runner itself failed under <mode> mode — the command did not run; ...]`。
 - 策略解析失败 / policy 非法 / 沙箱 provider 缺失：**拒绝执行**并返回 `SANDBOX_UNAVAILABLE: …` 文案，不会静默不受限跑。
+- **额外可写目录（0.2.2-rc.5 起）**：会话配置的 `additionalWritableRoots` 对**进程沙箱不生效**（只对文件工具生效）；
+  `confine` 不再抛 `SANDBOX_UNSUPPORTED_POLICY`，写这些目录会被 ACL 拒（与官方 bash 一致）。
+- **准备阶段失败（0.2.2-rc.5 起）**：ACL / 私有临时目录准备失败返回 `SANDBOX_PREPARATION_FAILED: …`，
+  TEMP 落在工作区内返回 `SANDBOX_INVALID_TEMP_ROOT: …`；两者都在 spawn 之前返回，**命令没有运行**。
+- `load-ok.txt` 里的 `sandboxServicesAtApply=present|missing` 是 **apply 时点**读数（服务按可用性激活），**不代表**运行期缺服务；
+  运行期 `execute()` 每次重新读取，缺服务时按上文 fail closed。
 
 ### 4. 重启 DSH，然后验收
 
@@ -65,7 +71,7 @@ pnpm install --no-frozen-lockfile
 | A4 无副本 | 调用前后数 `$env:TEMP\dsh-*`、看 TEMP 盘可用空间 | 数量不增、差值 < 50 MB |
 | B1–B6 沙箱 | 见 `docs/v0.2-design.md` 的 B1–B6 | 需临时把会话切到 `workspace-write` / `read-only`；当前 `danger-full-access` 会话无法覆盖 |
 
-编号映射：**A 系** = 装载 / 功能检查，但两处含义不同——`tools/acceptance.ps1` 内 A1=语法、A2=load 标记、A3=临时目录增量、A4=磁盘差值；`docs/design.md`「防偏离」A0–A6 是另一套（A1=功能测试 23 例等）。**B 系** = v0.2.0 真机沙箱验收（B1–B6，判据见 `docs/v0.2-design.md`）。执行时以各自表格为准。
+编号映射：**A 系** = 装载 / 功能检查，但两处含义不同——`tools/acceptance.ps1` 内 A1=语法、A2=load 标记、A3=临时目录增量、A4=磁盘差值；`docs/design.md`「防偏离」A0–A6 是另一套（A1=功能测试 25 例等）。**B 系** = v0.2.0 真机沙箱验收（B1–B6，判据见 `docs/v0.2-design.md`）。执行时以各自表格为准。
 
 机械验收（A1-A4，两阶段，见脚本头注释）：
 
@@ -99,4 +105,6 @@ node --test
 | 调用返回 `SANDBOX_UNAVAILABLE: sandbox provider service is not composed` | 有策略服务但沙箱 provider 缺失 | 宿主装配问题；本工具不会降级执行 |
 | 输出 `[sandbox: file access denied under <mode> mode]` | 策略拒绝（写越界） | 预期结果：改到允许的路径或让用户调整策略；**不要**换工具绕过 |
 | 输出 `[sandbox: the sandbox runner itself failed …]` | 沙箱 runner 自身故障，命令没有运行 | 沙箱环境问题（不是命令问题）；按提示排查 runner，不要当命令失败重试 |
+| 调用返回 `SANDBOX_PREPARATION_FAILED: …` | 沙箱准备失败（ACL 授权 / 私有临时目录准备失败），命令未运行 | 沙箱环境问题（不是命令问题）；按提示排查 ACL / 临时目录，不要当命令失败重试 |
+| 调用返回 `SANDBOX_INVALID_TEMP_ROOT: …` | `TEMP` 落在工作区内，宿主拒绝准备沙箱，命令未运行 | 把 `TEMP` / `TMP` 指到工作区外（例如用户临时目录）后重试 |
 | 命令卡住到超时 | 前台同步执行，没有后台作业 | 把长任务拆短或用 `start`/`&` 自行脱离（注意：脱离的进程不受管） |
